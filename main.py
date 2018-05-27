@@ -1,23 +1,40 @@
+import os
 import re
-from datetime import datetime
 import logging
+from datetime import datetime
 from argparse import ArgumentParser
 
-import os
+import numpy as np
+import matplotlib
+
+# Fix to use on Linux and Mac.
+if os.name == 'posix':
+    matplotlib.use('TkAgg')
+
 
 # En python, les chemins de fichier sont relatifs au répertoire courant
 # du shell qui appelle le script. Donc on cherche toujours à retrouver le
 # chemin absolu du script et son répertoire.
 CURRENT_FOLDER = os.path.dirname(__file__)
-DICT_FR_PATH = os.path.join(CURRENT_FOLDER, 'assets', 'wordsFR.txt')
-DICT_EN_PATH = os.path.join(CURRENT_FOLDER, 'assets', 'wordsEN.txt')
-DICT_ES_PATH = os.path.join(CURRENT_FOLDER, 'assets', 'wordsES.txt')
+
+# On repère les listes de mots.
+WORDS_FR_PATH = os.path.join(CURRENT_FOLDER, 'assets', 'wordsFR.txt')
+WORDS_EN_PATH = os.path.join(CURRENT_FOLDER, 'assets', 'wordsEN.txt')
+WORDS_ES_PATH = os.path.join(CURRENT_FOLDER, 'assets', 'wordsES.txt')
 
 # On définit des constantes pour identifier les langues.
 LANG_UNKNOWN = 0
 LANG_FR = 1
 LANG_EN = 2
 LANG_ES = 3
+ALL_LANGS = [LANG_UNKNOWN, LANG_FR, LANG_EN, LANG_ES]
+
+# On associe chaque liste de mots à sa langue.
+MAP_LANGUAGE_WORDS = {
+    LANG_FR: WORDS_FR_PATH,
+    LANG_EN: WORDS_EN_PATH,
+    LANG_ES: WORDS_ES_PATH
+}
 
 
 def parse_args():
@@ -33,6 +50,10 @@ def parse_args():
 
 
 def get_text_to_translate(input_text, input_file):
+    """En fonction des paramètres d'entrée fournis, retourne le texte à
+    traduire.
+    """
+
     # Un seul paramètre autorisé.
     if input_file and input_text:
         logging.error('--file ne peut pas être utilisé en même temps que text')
@@ -44,43 +65,75 @@ def get_text_to_translate(input_text, input_file):
             with open(input_file, 'r') as fd:
                 input_text = fd.read()
         except IOError:
-            logging.error("Le fichier fourni n'existe pas.")
+            logging.error("Le fichier fourni n'existe pas ou n'est pas"
+                          "lisible.")
             return ''
 
     # Si toujours rien dans input_text, lire la console.
-    input_text = input_text or input('Tapez un texte à traduire:')
+    return input_text or input('Tapez un texte à traduire:')
 
-    # Si l'utilisateur ne rentre rien, tant pis...
-    if not input_text:
-        return ''
-
-    # On enregistre l'input, pour vérification...
-    fname = os.path.join(CURRENT_FOLDER, 'text_{}'.format(datetime.now()))
-    with open(fname, "w") as fd:
-        fd.write(input_text)
-
-    return input_text
-
-
-def load_language_dictionary(dict_path, language):
-    with open(dict_path, 'rt', encoding="utf-8") as fd:
-        return {
-            word.strip(' \n\t').lower(): [language]
+def load_words_from_file(words_file_path):
+    with open(words_file_path, 'rt', encoding="utf-8") as fd:
+        return [
+            word.strip(' \n\t').lower()  # lower() pour reconnaitre les casses
             for line_num, word in enumerate(fd.readlines())
             if line_num > 0  # La première ligne est le nombre de mots.
-        }
+        ]
+
+
+def load_language_dictionary(list_words_path, language):
+    """Retourne un dictionnaire ou chaque mot est associé à la langue en
+    paramètre."""
+    return {word: [language] for word in load_words_from_file(list_words_path)}
+
+
+def prepare_word_for_transition_check(word):
+    """Retourne les index numériques pour chaque caractère du mot. A utiliser
+    pour manipuler une matrice de transition.
+    """
+    # Parce que chaque langue a ses caractères spéciaux mais qu'on ne
+    # s'intéresse qu'aux "basiques" (0-255), on cappe à 256, avec le caractère
+    # 256 considéré comme "autre"
+    return [min(ord(char), 256) for char in word]
+
+def load_transition_matrice(list_words_path):
+    """Charge une matrice de transition à partir d'un fichier contenant une
+    liste de mots."""
+    # On crée une matrice de 0s: (0-256)*(0-256)
+    matrix = np.zeros((257, 257), dtype='float')
+
+    # On compte combien de transition on évalue.
+    total_transitions = 0
+    for word in load_words_from_file(list_words_path):
+        chars_ords = prepare_word_for_transition_check(word)
+        # Pour chaque mot, on évalue chaque transition de lettre pour remplir
+        # la matrice.
+        for ord_index in range(len(chars_ords) - 1):
+            matrix[chars_ords[ord_index], chars_ords[ord_index+1]] += 1
+            total_transitions += 1
+
+    # On divise chaque cellule par le total pour normaliser la matrice. De
+    # cette façon, peu importe le nombre de mots évalués pour construire la
+    # matrice, le poids de chaque matrice sera équivalent (chaque case
+    # représentant une fréquence de transition générale d'un caractère à
+    # l'autre)
+    matrix /= total_transitions
+    return matrix
 
 
 def load_universal_dictionary():
+    """Charge un dictionnaire qui associe un mot à toutes les langues possible
+    pour ce mot."""
     # On charge les dictionaires.
-    dict_fr = load_language_dictionary(DICT_FR_PATH, LANG_FR)
-    dict_en = load_language_dictionary(DICT_EN_PATH, LANG_EN)
-    dict_es = load_language_dictionary(DICT_ES_PATH, LANG_ES)
+    language_dicts = [
+        load_language_dictionary(words_file_path, lang)
+        for lang, words_file_path in MAP_LANGUAGE_WORDS.items()
+    ]
 
     # On crée un super dictionnaire avec toutes les entrées. Attention :
     # certains mots sont valides dans plusieurs langues. C'est pris en charge.
     dict_all = {}
-    for dct in (dict_fr, dict_es, dict_en):
+    for dct in language_dicts:
         for key, value in dct.items():
             if key in dict_all:
                 dict_all[key] += value
@@ -89,15 +142,8 @@ def load_universal_dictionary():
     return dict_all
 
 
-def compute_scores_with_dictionary(text, dct):
-    scores = {LANG_FR: 0, LANG_EN: 0, LANG_ES: 0, LANG_UNKNOWN: 0}
-    words = re.split('\s+', text)
-    for word in words:
-        languages = dct.get(word.lower(), [])
-        for language in languages:
-            scores[language] += 1
-
-    # on normalise...
+def normalise_scores(scores):
+    """Normalise les scores"""
     total_score = sum(score for score in scores.values())
     if total_score > 0:
         for language in scores:
@@ -106,18 +152,69 @@ def compute_scores_with_dictionary(text, dct):
     return scores
 
 
+def compute_scores_with_dictionary(text):
+    """Calcule les scores d'appartenance à chaque langue pour un texte avec une
+    méthode de dictionnaire."""
+    dict_universe = load_universal_dictionary()
+    scores = {lang: 0 for lang in ALL_LANGS}
+
+    # Pour chaque mot...
+    for word in re.split('\s+', text):
+        # Trouver la liste des langues associées, ou "inconnu" si langue non
+        # trouvée.
+        languages = dict_universe.get(word.lower(), [LANG_UNKNOWN])
+        for language in languages:
+            scores[language] += 1
+
+    # on normalise...
+    return normalise_scores(scores)
+
+
+def compute_score_matrix(text, matrix):
+    """Calcule les scores d'appartenance à une langue pour un texte avec une
+    méthode de matrices."""
+    score = 0
+    words = re.split('\s+', text)
+    for word in words:
+        chars_ords = prepare_word_for_transition_check(word)
+        # Pour chaque mot, on évalue chaque transition de lettre pour remplir
+        # la matrice.
+        for ord_index in range(len(chars_ords) - 1):
+            score += matrix[chars_ords[ord_index], chars_ords[ord_index + 1]]
+    return score
+
+
+def compute_scores_with_matrices(text):
+    """Calcule les scores d'appartenance à chaque langue pour un texte avec une
+        méthode de dictionnaire."""
+
+    scores = {
+        LANG_FR: compute_score_matrix(text,  load_transition_matrice(WORDS_FR_PATH)),
+        LANG_EN: compute_score_matrix(text,  load_transition_matrice(WORDS_EN_PATH)),
+        LANG_ES: compute_score_matrix(text,  load_transition_matrice(WORDS_ES_PATH)),
+    }
+    return normalise_scores(scores)
+
+
 def main(input_text, input_file):
+    """Point d'entrée."""
     text = get_text_to_translate(input_text, input_file)
     if not text:
         return
 
-    dict_universe = load_universal_dictionary()
-    scores = compute_scores_with_dictionary(text, dict_universe)
-    logging.info("Ce texte a l'air:")
+    scores = compute_scores_with_dictionary(text)
+    logging.info("Avec des dictionnaires, ce texte a l'air:")
     logging.info("   - {:.2f}% français".format(scores[LANG_FR] * 100))
     logging.info("   - {:.2f}% anglais".format(scores[LANG_EN] * 100))
     logging.info("   - {:.2f}% espagnol".format(scores[LANG_ES] * 100))
-    logging.info("   - {:.2f}% non reconnu".format(scores[LANG_UNKNOWN] * 100))
+    logging.info("   - {:.2f}% non reconnus".format(scores[LANG_UNKNOWN] * 100))
+
+    scores = compute_scores_with_matrices(text)
+    logging.info("")
+    logging.info("Avec des matrices, ce texte a l'air:")
+    logging.info("   - {:.2f}% français".format(scores[LANG_FR] * 100))
+    logging.info("   - {:.2f}% anglais".format(scores[LANG_EN] * 100))
+    logging.info("   - {:.2f}% espagnol".format(scores[LANG_ES] * 100))
 
 
 if __name__ == '__main__':
