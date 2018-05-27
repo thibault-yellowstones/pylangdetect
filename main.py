@@ -1,16 +1,14 @@
 import os
 import re
 import logging
-from datetime import datetime
 from argparse import ArgumentParser
 
 import numpy as np
 import matplotlib
 
-# Fix to use on Linux and Mac.
+# Fix to use matplotlib on Linux and Mac.
 if os.name == 'posix':
     matplotlib.use('TkAgg')
-
 
 # En python, les chemins de fichier sont relatifs au répertoire courant
 # du shell qui appelle le script. Donc on cherche toujours à retrouver le
@@ -46,6 +44,9 @@ def parse_args():
                         help='Un texte pour lequel détecter la langue. '
                              'Incompatible avec --file')
     args, _ = parser.parse_known_args()
+    if args.text and args.file:
+        logging.error('--file est incompatible avec --text')
+        return '', ''
     return args.text, args.file
 
 
@@ -53,12 +54,6 @@ def get_text_to_translate(input_text, input_file):
     """En fonction des paramètres d'entrée fournis, retourne le texte à
     traduire.
     """
-
-    # Un seul paramètre autorisé.
-    if input_file and input_text:
-        logging.error('--file ne peut pas être utilisé en même temps que text')
-        return ''
-
     # Si fichier fourni, extraire son contenu.
     if input_file:
         try:
@@ -72,12 +67,16 @@ def get_text_to_translate(input_text, input_file):
     # Si toujours rien dans input_text, lire la console.
     return input_text or input('Tapez un texte à traduire:')
 
+
 def load_words_from_file(words_file_path):
+    """Charge les mots d'une langue à partir d'un fichier. Chaque mot doit
+    être sur sa propre ligne.
+    """
     with open(words_file_path, 'rt', encoding="utf-8") as fd:
         return [
-            word.strip(' \n\t').lower()  # lower() pour reconnaitre les casses
+            word.strip('\n').lower()  # lower() pour comparer sans casse.
             for line_num, word in enumerate(fd.readlines())
-            if line_num > 0  # La première ligne est le nombre de mots.
+            if line_num > 0  # On évite la première ligne (le nombre de mots).
         ]
 
 
@@ -96,6 +95,7 @@ def prepare_word_for_transition_check(word):
     # 256 considéré comme "autre"
     return [min(ord(char), 256) for char in word]
 
+
 def load_transition_matrice(list_words_path):
     """Charge une matrice de transition à partir d'un fichier contenant une
     liste de mots."""
@@ -109,7 +109,7 @@ def load_transition_matrice(list_words_path):
         # Pour chaque mot, on évalue chaque transition de lettre pour remplir
         # la matrice.
         for ord_index in range(len(chars_ords) - 1):
-            matrix[chars_ords[ord_index], chars_ords[ord_index+1]] += 1
+            matrix[chars_ords[ord_index], chars_ords[ord_index + 1]] += 1
             total_transitions += 1
 
     # On divise chaque cellule par le total pour normaliser la matrice. De
@@ -188,10 +188,11 @@ def compute_scores_with_matrices(text):
     """Calcule les scores d'appartenance à chaque langue pour un texte avec une
         méthode de dictionnaire."""
 
+    # Pour chaque langue, on charge la matrice et on calcule son score sur le
+    # texte.
     scores = {
-        LANG_FR: compute_score_matrix(text,  load_transition_matrice(WORDS_FR_PATH)),
-        LANG_EN: compute_score_matrix(text,  load_transition_matrice(WORDS_EN_PATH)),
-        LANG_ES: compute_score_matrix(text,  load_transition_matrice(WORDS_ES_PATH)),
+        lang: compute_score_matrix(text, load_transition_matrice(words_path))
+        for lang, words_path in MAP_LANGUAGE_WORDS.items()
     }
     return normalise_scores(scores)
 
@@ -207,7 +208,15 @@ def main(input_text, input_file):
     logging.info("   - {:.2f}% français".format(scores[LANG_FR] * 100))
     logging.info("   - {:.2f}% anglais".format(scores[LANG_EN] * 100))
     logging.info("   - {:.2f}% espagnol".format(scores[LANG_ES] * 100))
-    logging.info("   - {:.2f}% non reconnus".format(scores[LANG_UNKNOWN] * 100))
+    logging.info(
+        "   - {:.2f}% non reconnus".format(scores[LANG_UNKNOWN] * 100))
+    logging.info("")
+    logging.info("Détail:")
+    logging.info("   - 5 premiers français: {}".format(scores[LANG_FR][1][:5]))
+    logging.info("   - 5 premiers anglais: {}".format(scores[LANG_EN][1][:5]))
+    logging.info("   - 5 premiers espagnol: {}".format(scores[LANG_ES][1][:5]))
+    logging.info(
+        "   - 5 premiers non reconnus: {}".format(scores[LANG_UNKNOWN][1][:5]))
 
     scores = compute_scores_with_matrices(text)
     logging.info("")
