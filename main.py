@@ -210,13 +210,6 @@ def main(input_text, input_file):
     logging.info("   - {:.2f}% espagnol".format(scores[LANG_ES] * 100))
     logging.info(
         "   - {:.2f}% non reconnus".format(scores[LANG_UNKNOWN] * 100))
-    logging.info("")
-    logging.info("Détail:")
-    logging.info("   - 5 premiers français: {}".format(scores[LANG_FR][1][:5]))
-    logging.info("   - 5 premiers anglais: {}".format(scores[LANG_EN][1][:5]))
-    logging.info("   - 5 premiers espagnol: {}".format(scores[LANG_ES][1][:5]))
-    logging.info(
-        "   - 5 premiers non reconnus: {}".format(scores[LANG_UNKNOWN][1][:5]))
 
     scores = compute_scores_with_matrices(text)
     logging.info("")
